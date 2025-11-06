@@ -83,20 +83,22 @@ class SigmabanEnv(gym.Env):
 
         # --- Collision Weights ---
         self.collision_weights = {}
+        legs = 0.9
+        foots = 0.5
         for i in range(1,8):  # torso
-            self.collision_weights[i] = 2
+            self.collision_weights[i] = 3
         for i in range(8, 16):  # neck to head
-            self.collision_weights[i] = 2
+            self.collision_weights[i] = 5
         for i in range(16, 32):  # shoulders to elbows
-            self.collision_weights[i] = 1.1
+            self.collision_weights[i] = 0.95
         for i in range(32, 43):  # left leg
-            self.collision_weights[i] = 1
+            self.collision_weights[i] = legs
         for i in range(43, 49):  # left foot
-            self.collision_weights[i] = 0.5 # Good!
+            self.collision_weights[i] = foots
         for i in range(49, 60):  # right leg
-            self.collision_weights[i] = 1
+            self.collision_weights[i] = legs
         for i in range(60, 66):  # right foot
-            self.collision_weights[i] = 0.5 # Good!
+            self.collision_weights[i] = foots
         cleats=[45,46,47,48, 
                 62,63,64,65]
         for i in cleats:
