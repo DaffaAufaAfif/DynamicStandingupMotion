@@ -82,16 +82,25 @@ class SigmabanEnv(gym.Env):
         self.current_episode_reward = 0.0
 
         # --- Collision Weights ---
-        """self.collision_weights = {}
-        for i in range(1, 49):  # Torso, head, arms, legs
-            self.collision_weights[i] = 1.0
+        self.collision_weights = {}
+        for i in range(1,8):  # torso
+            self.collision_weights[i] = 2
+        for i in range(8, 16):  # neck to head
+            self.collision_weights[i] = 2
+        for i in range(16, 32):  # shoulders to elbows
+            self.collision_weights[i] = 1.1
+        for i in range(32, 43):  # left leg
+            self.collision_weights[i] = 1
         for i in range(43, 49):  # left foot
-            self.collision_weights[i] = 1.0  # IGNORE
+            self.collision_weights[i] = 0.5 # Good!
         for i in range(49, 60):  # right leg
-            self.collision_weights[i] = 1.0
+            self.collision_weights[i] = 1
         for i in range(60, 66):  # right foot
-            self.collision_weights[i] = 1.0  # IGNORE"""
-
+            self.collision_weights[i] = 0.5 # Good!
+        cleats=[45,46,47,48, 
+                62,63,64,65]
+        for i in cleats:
+            self.collision_weights[i] = -0.2
     # -----------------------------------------------------------
     def set_randomization_level(self, level: float):
         """Public method to manually override noise level if needed."""
@@ -206,7 +215,7 @@ class SigmabanEnv(gym.Env):
 
         reward = (
             posture_reward *0.6
-            + variation_bonus *0.3
+            + variation_bonus *0.1
             - collisions *0.2
         )
 
@@ -240,8 +249,25 @@ class SigmabanEnv(gym.Env):
 
     # -----------------------------------------------------------
     def _get_collision_penalty(self):
-        #removed per part value
-        return self.sim.data.ncon
+        penalty = 0.0
+        for i in range(self.sim.data.ncon):
+            contact = self.sim.data.contact[i]
+            g1, g2 = contact.geom1, contact.geom2
+            n1 = mujoco.mj_id2name(self.sim.model, mujoco.mjtObj.mjOBJ_GEOM, g1)
+            n2 = mujoco.mj_id2name(self.sim.model, mujoco.mjtObj.mjOBJ_GEOM, g2)
+
+            name1 = n1.lower() if n1 else ""
+            name2 = n2.lower() if n2 else ""
+
+            if "floor" in name1 or "ground" in name1:
+                body_id = g2
+            elif "floor" in name2 or "ground" in name2:
+                body_id = g1
+            else:
+                continue # This is a self-collision, ignore for now
+            
+            penalty += self.collision_weights.get(body_id, 0.0)
+        return penalty
 
     # -----------------------------------------------------------
     def _check_termination(self):
