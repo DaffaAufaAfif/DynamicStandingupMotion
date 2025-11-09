@@ -20,11 +20,6 @@ class SigmabanEnv(gym.Env):
         model_dir: str = None,
         render_mode: str | None = None,
         maxSec: float = 15.0,
-        randomization_noise_level: float = 0.0,
-        curriculum_enabled: bool = True,
-        reward_threshold: float = -8.0,
-        noise_increment: float = 0.05,
-        max_noise: float = 0.2,
     ):
         
         super().__init__()
@@ -58,7 +53,7 @@ class SigmabanEnv(gym.Env):
             high=np.array([1.0] * len(self.dofs), dtype=np.float32),
             dtype=np.float32,
         )
-        obs_dim = len(self.control_joints) * 2 + 3 + 1
+        obs_dim = len(self.dofs) * 2 + 3 + 1 + 8
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
         )
@@ -70,127 +65,34 @@ class SigmabanEnv(gym.Env):
         self.last_q = np.zeros(len(self.control_joints), dtype=np.float32)
         self.last_termination_info = {}
         
-        # --- MODIFIED: Internal Curriculum Variables ---
-        self.randomization_noise_level = randomization_noise_level
-        self.curriculum_enabled = curriculum_enabled
-        self.reward_threshold = reward_threshold
-        self.noise_increment = noise_increment
-        self.max_noise = max_noise
-        
-        # Buffer to track mean reward over last 100 episodes
-        self.episode_reward_buffer = deque(maxlen=100)
-        self.current_episode_reward = 0.0
 
         # --- Collision Weights ---
         self.collision_weights = {}
-        legs = 0.9
-        foots = 0.5
-        for i in range(1,8):  # torso
-            self.collision_weights[i] = 3
-        for i in range(8, 16):  # neck to head
-            self.collision_weights[i] = 5
-        for i in range(16, 32):  # shoulders to elbows
-            self.collision_weights[i] = 0.95
-        for i in range(32, 43):  # left leg
-            self.collision_weights[i] = legs
-        for i in range(43, 49):  # left foot
-            self.collision_weights[i] = foots
-        for i in range(49, 60):  # right leg
-            self.collision_weights[i] = legs
-        for i in range(60, 66):  # right foot
-            self.collision_weights[i] = foots
+        for i in range(7):  # torso
+            self.collision_weights[i] = 5.0
+        for i in range(7, 15):  # neck to head
+            self.collision_weights[i] = 10.0
+        for i in range(15, 31):  # shoulders to elbows
+            self.collision_weights[i] = 0.8
+        for i in range(31, 42):  # left leg
+            self.collision_weights[i] = 0.5
+        for i in range(42, 48):  # left foot
+            self.collision_weights[i] = -0.05
+        for i in range(48, 59):  # right leg
+            self.collision_weights[i] = 0.5
+        for i in range(59, 65):  # right foot
+            self.collision_weights[i] = -0.05
         cleats=[45,46,47,48, 
                 62,63,64,65]
         for i in cleats:
-            self.collision_weights[i] = -0.2
-    # -----------------------------------------------------------
-    def set_randomization_level(self, level: float):
-        """Public method to manually override noise level if needed."""
-        self.randomization_noise_level = level
-    
-    # -----------------------------------------------------------
-    def _update_curriculum(self):
-        """
-        --- NEW: Internal curriculum logic ---
-        Checks mean reward and increases noise if threshold is met.
-        """
-        if not self.curriculum_enabled:
-            return
-
-        # Only check if the buffer is full (e.g., 20 episodes)
-        if len(self.episode_reward_buffer) == 20:
-            mean_reward = np.mean(self.episode_reward_buffer)
-            
-            if mean_reward > self.reward_threshold:
-                new_noise = self.randomization_noise_level + self.noise_increment
-                
-                if new_noise <= self.max_noise:
-                    # Success! Increase noise
-                    self.randomization_noise_level = new_noise
-                    print(f"--- CURRICULUM: Success! Mean reward {mean_reward:.2f} > {self.reward_threshold:.2f} ---")
-                    print(f"--- CURRICULUM: Increasing noise to {self.randomization_noise_level:.3f} ---")
-                    
-                    # Clear buffer to wait for a new stable average
-                    self.episode_reward_buffer.clear()
-                
-                elif self.randomization_noise_level < self.max_noise:
-                    # We are at the max noise level
-                    print(f"--- CURRICULUM: Reached Max Noise Level: {self.max_noise:.3f} ---")
-                    self.randomization_noise_level = self.max_noise
-                    self.curriculum_enabled = False # Turn off curriculum
-                    
+            self.collision_weights[i] = -0.25
     # -----------------------------------------------------------
     def reset(self, *, seed=None, options=None):
-        
-        # --- NEW: Curriculum logic runs on reset ---
-        # (Only if it's not the very first step of the run)
-        if self.current_step > 0:
-            self.episode_reward_buffer.append(self.current_episode_reward)
-            self._update_curriculum()
-            
-        self.current_episode_reward = 0.0
-        # --- End of new logic ---
-
         super().reset(seed=seed)
         self.sim.reset()
-
-        # --- 5-second stabilization period ---
-        physics_dt = self.sim.model.opt.timestep
-        stabilization_seconds = 5.0
-        num_stabilization_steps = int(stabilization_seconds / physics_dt)
-        for _ in range(num_stabilization_steps):
-            self.sim.step()
-            
-        # --- Apply randomization *after* stabilization ---
-        if self.randomization_noise_level > 0.0:
-            qpos = self.sim.data.qpos.copy()
-            qvel = self.sim.data.qvel.copy()
-            nq = self.sim.model.nq
-            nv = self.sim.model.nv
-
-            pos_noise = self.np_random.uniform(
-                low=-self.randomization_noise_level,
-                high=self.randomization_noise_level,
-                size=nq
-            )
-            pos_noise[0:7] = 0.0  # No noise on root
-            
-            vel_noise_scale = self.randomization_noise_level * 0.1 
-            vel_noise = self.np_random.uniform(
-                low=-vel_noise_scale,
-                high=vel_noise_scale,
-                size=nv
-            )
-            vel_noise[0:6] = 0.0 # No noise on root
-            
-            self.sim.data.qpos[:] = qpos + pos_noise
-            self.sim.data.qvel[:] = qvel + vel_noise
-            mujoco.mj_forward(self.sim.model, self.sim.data)
-
         self.current_step = 0
-        self.last_q = np.array([self.sim.get_q(j) for j in self.control_joints])
+        self.last_q[:] = 0
         self.last_termination_info = {}
-
         return self._get_obs(), {}
 
     # -----------------------------------------------------------
@@ -216,17 +118,15 @@ class SigmabanEnv(gym.Env):
         self.last_q = current_q
 
         reward = (
-            posture_reward *0.6
+            posture_reward *0.01
             + variation_bonus *0.1
-            - collisions *0.2
+            - collisions
         )
 
         self.current_step += 1
         terminated = self._check_termination()
         truncated = self.current_step >= self.maxStep
 
-        # --- NEW: Track reward for internal curriculum ---
-        self.current_episode_reward += reward
 
         info = {
             "collisions": collisions,
@@ -246,11 +146,16 @@ class SigmabanEnv(gym.Env):
         joint_vel = [self.sim.get_qdot(j) for j in self.control_joints]
         gyro = self.sim.get_gyro()
         forces = [self.sim.centroidal_force()]
-        obs = np.concatenate([joint_pos, joint_vel, gyro, forces])
+        dictpressure = self.sim.get_pressure_sensors()
+        leftpress= dictpressure["left"]
+        rightpres= dictpressure["right"]
+        obs = np.concatenate([joint_pos, joint_vel, gyro, forces, leftpress, rightpres])
         return obs.astype(np.float32)
 
     # -----------------------------------------------------------
-    def _get_collision_penalty(self):
+    def _get_collision_penalty(self, show=False):
+        if show:
+            print("------")
         penalty = 0.0
         for i in range(self.sim.data.ncon):
             contact = self.sim.data.contact[i]
@@ -268,6 +173,8 @@ class SigmabanEnv(gym.Env):
             else:
                 continue # This is a self-collision, ignore for now
             
+            if show:
+                print(body_id,self.collision_weights.get(body_id, 0.0))
             penalty += self.collision_weights.get(body_id, 0.0)
         return penalty
 
