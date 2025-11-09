@@ -1,9 +1,9 @@
 import os
 import time
 import mujoco
-from stable_baselines3 import PPO
-from simul_env.env_wrapper import SigmabanEnv
-#from simul_env.coll_env import SigmabanEnv
+from stable_baseline3 import PPO
+#from simul_env.env_wrapper import SigmabanEnv
+from simul_env.coll_env import SigmabanEnv
 collision_weights = {}
 for i in range(7):  # torso parts
     collision_weights[i] = "Torso"
