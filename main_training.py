@@ -1,150 +1,116 @@
 import os
+import re
 import torch
-import torch.nn as nn
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import (
-    CheckpointCallback,
-    EvalCallback,
-    StopTrainingOnNoModelImprovement,
-)
-from stable_baselines3.common.logger import configure
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.monitor import Monitor
-
+from stable_baselines3.common.logger import configure
+from stable_baselines3.common.callbacks import CheckpointCallback
 from simul_env.coll_env import SigmabanEnv
 
-# -----------------------------
-def write(msg):
-    print(msg, flush=True)
+# -------------------------
+# Project folder on Drive
+# -------------------------
+project_dir = "/content/drive/MyDrive/Intern_ichirov2/ProjectFall/"
+log_dir = os.path.join(project_dir, "logs/sigmaban_ppo/")
+save_path = os.path.join(project_dir, "checkpoints/")
 
-# --- Config ---
-saveName = "ppo_sigmaban_quick"
-log_dir = "./logs"
-save_dir = "./checkpoints"
 os.makedirs(log_dir, exist_ok=True)
-os.makedirs(save_dir, exist_ok=True)
+os.makedirs(save_path, exist_ok=True)
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-write("=========================================")
-write(f"Using device: {device}")
-write("=========================================")
+# -------------------------
+# Parallel environments
+# -------------------------
+num_envs = 8  # adjust as needed
 
-stats_path = os.path.join(save_dir, f"{saveName}_vec_normalize.pkl")
-
-# -----------------------------
-def make_env_fn():
+def make_env(rank: int):
     def _init():
-        env = SigmabanEnv(render_mode=None, maxSec=15.0)
-        return Monitor(env)
+        env = SigmabanEnv( render_mode=None)
+        env = Monitor(env, filename=os.path.join(log_dir, f"env_{rank}"))
+        return env
     return _init
 
-# -----------------------------
-def main():
-    n_timesteps = int(100e6)
-    n_envs = 16
-    n_steps = 512
-    batch_size = 64
-    n_epochs = 2
-    gamma = 0.998
-    learning_rate = 5e-5
-    gae_lambda = 0.95
-    ent_coef = 0.0001
-    use_sde = True
-    sde_sample_freq = 3
+env_fns = [make_env(i) for i in range(num_envs)]
+vec_env = DummyVecEnv(env_fns)
 
-    policy_kwargs = dict(
-        log_std_init=-2.0,
-        ortho_init=False,
-        activation_fn=nn.ReLU,
-        net_arch=dict(pi=[256, 256], vf=[256, 256]),
+# -------------------------
+# Load or create VecNormalize
+# -------------------------
+vecnorm_path = os.path.join(save_path, "vec_normalize.pkl")
+if os.path.exists(vecnorm_path):
+    print("🔄 Loading previous VecNormalize...")
+    vec_env = VecNormalize.load(vecnorm_path, vec_env)
+else:
+    vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0)
+
+# -------------------------
+# Checkpoint callback & logger
+# -------------------------
+checkpoint_callback = CheckpointCallback(
+    save_freq=10_000,
+    save_path=save_path,
+    name_prefix="ppo_sigmaban"
+)
+
+logger = configure(log_dir, ["stdout", "csv", "tensorboard"])
+
+# -------------------------
+# Load last PPO checkpoint if exists
+# -------------------------
+def find_latest_checkpoint(path):
+    checkpoints = [
+        f for f in os.listdir(path)
+        if f.startswith("ppo_sigmaban") and f.endswith(".zip")
+    ]
+    if not checkpoints:
+        return None
+    checkpoints.sort(
+        key=lambda x: int(re.findall(r"(\d+)", x)[-1]) if re.findall(r"(\d+)", x) else 0
     )
+    return os.path.join(path, checkpoints[-1])
 
-    # --- Vectorized environments ---
-    env = make_vec_env(
-        SigmabanEnv,
-        n_envs=n_envs,
-        vec_env_cls=DummyVecEnv,
-        env_kwargs=dict(render_mode=None, maxSec=15.0),
-    )
-    env = VecNormalize(env, norm_obs=True, norm_reward=True, gamma=gamma)
-
-    eval_env = make_vec_env(
-        SigmabanEnv,
-        n_envs=1,
-        vec_env_cls=DummyVecEnv,
-        env_kwargs=dict(render_mode=None, maxSec=15.0),
-    )
-    eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=True, gamma=gamma)
-    eval_env.training = False
-    eval_env.norm_reward = False
-
-    # --- Logger ---
-    log_path = os.path.join(log_dir, saveName)
-    new_logger = configure(log_path, ["stdout", "log", "tensorboard"])
-
-    # --- Callbacks ---
-    checkpoint_callback = CheckpointCallback(
-        save_freq=10_000,  # small quick save interval
-        save_path=save_dir,
-        name_prefix=saveName,
-    )
-
-    stop_callback = StopTrainingOnNoModelImprovement(
-        max_no_improvement_evals=5, min_evals=3, verbose=1
-    )
-
-    eval_callback = EvalCallback(
-        eval_env,
-        best_model_save_path=save_dir,
-        log_path=log_dir,
-        eval_freq=20_000,
-        n_eval_episodes=5,
-        deterministic=True,
-        callback_on_new_best=stop_callback,
-    )
-
-    # --- PPO Model ---
+last_ckpt = find_latest_checkpoint(save_path)
+if last_ckpt:
+    print(f"🔁 Resuming training from checkpoint: {last_ckpt}")
+    model = PPO.load(last_ckpt, env=vec_env, device="cpu")
+else:
+    print("🚀 Starting new PPO training from scratch.")
     model = PPO(
         policy="MlpPolicy",
-        env=env,
-        n_steps=n_steps,
-        batch_size=batch_size,
-        n_epochs=n_epochs,
-        gamma=gamma,
-        learning_rate=learning_rate,
-        gae_lambda=gae_lambda,
-        ent_coef=ent_coef,
-        clip_range=0.2,
-        use_sde=use_sde,
-        sde_sample_freq=sde_sample_freq,
+        env=vec_env,
         verbose=1,
-        device=device,
+        learning_rate=3e-4,
+        n_steps=2048 // num_envs,
+        batch_size=64,
+        n_epochs=10,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        ent_coef=0.0,
+        vf_coef=0.5,
         tensorboard_log=log_dir,
-        policy_kwargs=policy_kwargs,
+        device="cpu",
     )
-    model.set_logger(new_logger)
 
-    # --- Train ---
-    write("Training Starts...")
-    try:
-        model.learn(
-            total_timesteps=n_timesteps,
-            callback=[checkpoint_callback, eval_callback],
-            reset_num_timesteps=False,
-        )
-    except Exception as e:
-        write(f"\n!!! Training interrupted by error: {e} !!!")
-        import traceback
-        traceback.print_exc()
-    finally:
-        final_path = os.path.join(save_dir, f"{saveName}_final.zip")
-        model.save(final_path)
-        env.save(stats_path)
-        write("--- Training Finished ---")
-        write(f"Final model saved as {final_path}")
-        write(f"Normalization stats saved as {stats_path}")
+model.set_logger(logger)
 
-# -----------------------------
-if __name__ == "__main__":
-    main()
+# -------------------------
+# Train PPO
+# -------------------------
+total_timesteps = 10_000_000  # adjust as needed
+print(f"\n🎯 Training for {total_timesteps:,} timesteps on CPU ({num_envs} envs)...\n")
+
+model.learn(
+    total_timesteps=total_timesteps,
+    callback=checkpoint_callback,
+    progress_bar=True,
+)
+
+# -------------------------
+# Save final model & VecNormalize
+# -------------------------
+final_model_path = os.path.join(save_path, "ppo_sigmaban_final.zip")
+model.save(final_model_path)
+vec_env.save(vecnorm_path)
+
+print(f"\n✅ Training complete. Final model saved to:\n{final_model_path}")
