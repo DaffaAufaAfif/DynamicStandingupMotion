@@ -1,4 +1,3 @@
-%%writefile simul_env/coll_env.py
 
 import gymnasium as gym
 import numpy as np
