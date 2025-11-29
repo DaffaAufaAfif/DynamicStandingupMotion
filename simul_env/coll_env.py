@@ -3,21 +3,18 @@ import gymnasium as gym
 import numpy as np
 import sys
 import os
+import mujoco  # <--- WAJIB IMPORT INI
 
-# --- FIX IMPORT PATH (JURUS ANTI GAGAL) ---
-# Kita paksa Python melihat folder project utama
-project_root = '/content/DynamicStandingupMotion'
-if project_root not in sys.path:
-    sys.path.append(project_root)
-
-# Import Simulator (Sekarang pasti ketemu)
+# --- FIX IMPORT PATH ---
 try:
     from simul_env.simulator import Simulator
 except ImportError:
-    # Cadangan jika dijalankan dari dalam folder
-    from simulator import Simulator
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(current_dir)
+    if parent_dir not in sys.path:
+        sys.path.append(parent_dir)
+    from simul_env.simulator import Simulator
 
-# --- KODE LOGIKA ROBOT (STAND UP VERSION) ---
 class SigmabanEnv(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 60}
 
@@ -42,7 +39,6 @@ class SigmabanEnv(gym.Env):
             low=-1.0, high=1.0, shape=(len(self.dofs) * 2,), dtype=np.float32
         )
         
-        # Obs: qpos(20) + qvel(20) + gyro(3) + z-pos(1) + pressure(8)
         obs_dim = len(self.dofs) * 2 * 2 + 3 + 1 + 8 
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
@@ -57,12 +53,15 @@ class SigmabanEnv(gym.Env):
         # --- PAKSA TIDUR TERLENTANG ---
         qpos = self.sim.data.qpos.copy()
         qvel = self.sim.data.qvel.copy()
-        qpos[2] = 0.35  # Jatuh ke lantai
-        qpos[3:7] = [0.707, 0, 0.707, 0] # Rotasi tidur
+        qpos[2] = 0.35
+        qpos[3:7] = [0.707, 0, 0.707, 0]
         
         self.sim.data.qpos[:] = qpos
         self.sim.data.qvel[:] = qvel
-        self.sim.model.forward()
+        
+        # --- PERBAIKAN DI SINI ---
+        # Menggunakan fungsi global mujoco.mj_forward
+        mujoco.mj_forward(self.sim.model, self.sim.data)
 
         for _ in range(20): self.sim.step()
 
