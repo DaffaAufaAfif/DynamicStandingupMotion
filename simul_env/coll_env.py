@@ -1,9 +1,24 @@
+%%writefile simul_env/coll_env.py
 
 import gymnasium as gym
 import numpy as np
-from simul_env.simulator import Simulator
+import sys
+import os
 
-# --- KODE BARU (VERSI STAND UP) ---
+# --- FIX IMPORT PATH (JURUS ANTI GAGAL) ---
+# Kita paksa Python melihat folder project utama
+project_root = '/content/DynamicStandingupMotion'
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
+# Import Simulator (Sekarang pasti ketemu)
+try:
+    from simul_env.simulator import Simulator
+except ImportError:
+    # Cadangan jika dijalankan dari dalam folder
+    from simulator import Simulator
+
+# --- KODE LOGIKA ROBOT (STAND UP VERSION) ---
 class SigmabanEnv(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 60}
 
@@ -24,13 +39,11 @@ class SigmabanEnv(gym.Env):
         self.range_low = np.array([r[0] for r in self.ranges])
         self.range_high = np.array([r[1] for r in self.ranges])
 
-        # Action Space
         self.action_space = gym.spaces.Box(
             low=-1.0, high=1.0, shape=(len(self.dofs) * 2,), dtype=np.float32
         )
         
-        # Observation Space (Ditambah Z-Height)
-        # qpos (20) + qvel (20) + gyro (3) + z-pos (1) + pressure (8) = 52
+        # Obs: qpos(20) + qvel(20) + gyro(3) + z-pos(1) + pressure(8)
         obs_dim = len(self.dofs) * 2 * 2 + 3 + 1 + 8 
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
@@ -45,14 +58,13 @@ class SigmabanEnv(gym.Env):
         # --- PAKSA TIDUR TERLENTANG ---
         qpos = self.sim.data.qpos.copy()
         qvel = self.sim.data.qvel.copy()
-        qpos[2] = 0.35  # Jatuhkan ke lantai
-        qpos[3:7] = [0.707, 0, 0.707, 0] # Rotasi 90 derajat
+        qpos[2] = 0.35  # Jatuh ke lantai
+        qpos[3:7] = [0.707, 0, 0.707, 0] # Rotasi tidur
         
         self.sim.data.qpos[:] = qpos
         self.sim.data.qvel[:] = qvel
-        self.sim.model.forward() # Update fisika
+        self.sim.model.forward()
 
-        # Stabilisasi
         for _ in range(20): self.sim.step()
 
         return self._get_obs(), {}
@@ -71,13 +83,12 @@ class SigmabanEnv(gym.Env):
         for _ in range(self.physics_steps_per_agent_step):
             self.sim.step()
 
-        # --- REWARD BARU (Fokus Tinggi Badan) ---
+        # --- REWARD SYSTEM ---
         torso_z = self.sim.data.body("torso_2023").xpos[2]
         
         r_height = 10.0 * torso_z 
         r_ctrl = -0.05 * np.sum(np.square(action))
         
-        # Bonus jika punggung tegak
         torso_mat = self.sim.data.body("torso_2023").xmat.reshape(3, 3)
         r_upright = 2.0 * torso_mat[2, 2] if torso_mat[2, 2] > 0 else 0
         
@@ -100,7 +111,7 @@ class SigmabanEnv(gym.Env):
         qdot = [self.sim.get_qdot(f"left_{dof}") for dof in self.dofs] + \
                [self.sim.get_qdot(f"right_{dof}") for dof in self.dofs]
         gyro = self.sim.get_gyro()
-        torso_z = [self.sim.data.body("torso_2023").xpos[2]] # Z-Height Info
+        torso_z = [self.sim.data.body("torso_2023").xpos[2]]
         pressure = self.sim.get_pressure_sensors()
         flat_pressure = np.concatenate([pressure["left"], pressure["right"]])
         
